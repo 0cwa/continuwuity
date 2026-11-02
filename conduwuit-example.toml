@@ -1784,6 +1784,13 @@
 # are not stored in the database. S3 time-window cleanup uses each object's
 # Last-Modified time, so copied objects use their copy time.
 #
+# Upload bodies remain fully buffered in memory. Direct client uploads and
+# URL-preview downloads transfer their owned buffer to the backend without
+# an additional full-body copy in the media adapter. Remote federation media
+# and generated thumbnails remain buffered because the same bytes are also
+# returned in the response.
+#
+# env: CONTINUWUITY_MEDIA_BACKEND
 #media_backend = "local"
 
 # List of forbidden server names via regex patterns that we will block
@@ -2350,43 +2357,52 @@
 
 # The S3 bucket used for media objects.
 #
+# env: CONTINUWUITY_MEDIA_S3__BUCKET
 #bucket =
 
 # The AWS region. If omitted, the standard AWS environment settings are
 # used, falling back to `us-east-1`.
 #
+# env: CONTINUWUITY_MEDIA_S3__REGION
 #region =
 
 # An S3-compatible service endpoint. Omit this for AWS S3.
 #
+# env: CONTINUWUITY_MEDIA_S3__ENDPOINT
 #endpoint =
 
 # Prefix prepended to each generated media object key.
 #
+# env: CONTINUWUITY_MEDIA_S3__KEY_PREFIX
 #key_prefix = ""
 
 # Optional static access key ID. If omitted, credentials are loaded from
 # the standard AWS environment variables or workload credential providers.
 #
+# env: CONTINUWUITY_MEDIA_S3__ACCESS_KEY_ID
 #access_key_id =
 
 # Optional static secret access key. If omitted, credentials are loaded from
 # the standard AWS environment variables or workload credential providers.
 #
+# env: CONTINUWUITY_MEDIA_S3__SECRET_ACCESS_KEY
 #secret_access_key =
 
 # Optional session token for temporary static credentials.
 #
+# env: CONTINUWUITY_MEDIA_S3__SESSION_TOKEN
 #session_token =
 
 # Use virtual-hosted requests instead of path-style requests. Omit this to
 # use the S3 backend's path-style default.
 #
+# env: CONTINUWUITY_MEDIA_S3__VIRTUAL_HOSTED_STYLE_REQUEST
 #virtual_hosted_style_request =
 
 # Permit plain HTTP connections. Leave disabled except for isolated local
 # S3-compatible test services.
 #
+# env: CONTINUWUITY_MEDIA_S3__ALLOW_HTTP
 #allow_http = false
 
 [global.well_known]

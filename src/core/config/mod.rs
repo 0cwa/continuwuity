@@ -1890,6 +1890,12 @@ pub struct Config {
 	/// are not stored in the database. S3 time-window cleanup uses each object's
 	/// Last-Modified time, so copied objects use their copy time.
 	///
+	/// Upload bodies remain fully buffered in memory. Direct client uploads and
+	/// URL-preview downloads transfer their owned buffer to the backend without
+	/// an additional full-body copy in the media adapter. Remote federation media
+	/// and generated thumbnails remain buffered because the same bytes are also
+	/// returned in the response.
+	///
 	/// default: "local"
 	#[serde(default)]
 	pub media_backend: MediaBackend,
@@ -1897,6 +1903,16 @@ pub struct Config {
 	/// S3-compatible object storage settings. These are required when
 	/// `media_backend` is `s3`. Credentials may also be supplied through the
 	/// standard AWS environment variables or workload credential providers.
+	///
+	/// For AWS S3, the media adapter uses `s3:PutObject`, `s3:GetObject` (also
+	/// authorizes its `HeadObject` requests), and `s3:DeleteObject` on the
+	/// configured object prefix. Time-window cleanup treats a missing object as
+	/// absent. AWS only reports a missing `HeadObject` as 404 when the principal
+	/// also has `s3:ListBucket` on the bucket; without it AWS may return 403 and
+	/// cleanup will report an error. Grant `s3:ListBucket` only if this missing
+	/// object behavior is needed. Other S3-compatible providers may have different
+	/// permission names or missing-object semantics. SSE-KMS buckets may also
+	/// require `kms:GenerateDataKey` and `kms:Decrypt` on the configured key.
 	///
 	/// display: nested
 	#[serde(default)]
