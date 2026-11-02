@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use conduwuit::{
-	Err, Result, debug, debug_info, err,
+	Result, debug, debug_info, err,
 	utils::{ReadyExt, str_from_bytes, stream::TryIgnore, string_from_bytes},
 };
 use database::{Database, Interfix, Map};
@@ -33,24 +33,24 @@ impl Data {
 		}
 	}
 
-	pub(super) fn create_file_metadata(
+	pub(super) fn prepare_file_metadata(
 		&self,
 		mxc: &Mxc<'_>,
-		user: Option<&UserId>,
 		dim: &Dim,
 		content_disposition: Option<&ContentDisposition>,
 		content_type: Option<&str>,
 	) -> Result<Vec<u8>> {
 		let dim: &[u32] = &[dim.width, dim.height];
 		let key = (mxc, dim, content_disposition.map(ToString::to_string), content_type);
-		let key = database::serialize_key(key)?;
-		self.mediaid_file.insert(&key, []);
+		Ok(database::serialize_key(key)?.to_vec())
+	}
+
+	pub(super) fn insert_file_metadata(&self, key: &[u8], mxc: &Mxc<'_>, user: Option<&UserId>) {
+		self.mediaid_file.insert(key, []);
 		if let Some(user) = user {
 			let key = (mxc, user);
 			self.mediaid_user.put_raw(key, user);
 		}
-
-		Ok(key.to_vec())
 	}
 
 	pub(super) async fn delete_file_mxc(&self, mxc: &Mxc<'_>) {
@@ -81,7 +81,7 @@ impl Data {
 	}
 
 	/// Searches for all files with the given MXC
-	pub(super) async fn search_mxc_metadata_prefix(&self, mxc: &Mxc<'_>) -> Result<Vec<Vec<u8>>> {
+	pub(super) async fn search_mxc_metadata_prefix(&self, mxc: &Mxc<'_>) -> Vec<Vec<u8>> {
 		debug!("MXC URI: {mxc}");
 
 		let prefix = (mxc, Interfix);
@@ -93,13 +93,9 @@ impl Data {
 			.collect()
 			.await;
 
-		if keys.is_empty() {
-			return Err!(Database("Failed to find any keys in database for `{mxc}`",));
-		}
-
 		debug!("Got the following keys: {keys:?}");
 
-		Ok(keys)
+		keys
 	}
 
 	pub(super) async fn search_file_metadata(

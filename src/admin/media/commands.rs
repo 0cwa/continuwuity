@@ -164,9 +164,10 @@ impl crate::Context<'_> {
 						mxc_deletion_count = mxc_deletion_count.saturating_add(1);
 					},
 					| Err(e) => {
-						debug_warn!(
-							"Failed to delete {mxc_url}, ignoring error and skipping: {e}"
-						);
+						debug_warn!("Failed to delete {mxc_url}: {e}");
+						if !self.services.media.is_local_storage() {
+							return Err(e);
+						}
 						continue;
 					},
 				}
@@ -223,7 +224,10 @@ impl crate::Context<'_> {
 					mxc_deletion_count = mxc_deletion_count.saturating_add(1);
 				},
 				| Err(e) => {
-					debug_warn!("Failed to delete {mxc}, ignoring error and skipping: {e}");
+					debug_warn!("Failed to delete {mxc}: {e}");
+					if !self.services.media.is_local_storage() {
+						return Err(e);
+					}
 					continue;
 				},
 			}
@@ -330,7 +334,10 @@ impl crate::Context<'_> {
 					deleted_count = deleted_count.saturating_add(1);
 				},
 				| Err(e) => {
-					debug_warn!("Failed to delete {mxc}, ignoring error and skipping: {e}");
+					debug_warn!("Failed to delete {mxc}: {e}");
+					if !self.services.media.is_local_storage() {
+						return Err(e);
+					}
 					continue;
 				},
 			}

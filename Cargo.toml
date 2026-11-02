@@ -86,6 +86,11 @@ version = "0.10.1"
 [workspace.dependencies.bytes]
 version = "1.10.1"
 
+[workspace.dependencies.object_store]
+version = "0.14.2"
+default-features = false
+features = ["aws-base", "reqwest", "ring"]
+
 [workspace.dependencies.http-body-util]
 version = "0.1.3"
 

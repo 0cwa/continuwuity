@@ -1848,7 +1848,7 @@ pub struct Config {
 	///
 	/// If none of these checks apply to your use cases, and your media
 	/// directory is significantly large setting this to false may reduce
-	/// startup time.
+	/// startup time. This check applies only when `media_backend` is `local`.
 	#[serde(default = "true_fn")]
 	pub media_startup_check: bool,
 
@@ -1856,6 +1856,7 @@ pub struct Config {
 	/// symlinks of media.
 	///
 	/// This option is only necessary if you plan on using Conduit again.
+	/// It applies only when `media_backend` is `local`.
 	/// Otherwise setting this to false reduces filesystem clutter and overhead
 	/// for managing these symlinks in the directory. This is now disabled by
 	/// default. You may still return to upstream Conduit but you have to run
@@ -1872,9 +1873,34 @@ pub struct Config {
 	/// corresponding entries will be removed from the database. This is
 	/// disabled by default because if the media directory is accidentally moved
 	/// or inaccessible, the metadata entries in the database will be lost with
-	/// sadness.
+	/// sadness. This applies only when `media_backend` is `local`.
 	#[serde(default)]
 	pub prune_missing_media: bool,
+
+	/// Select where media files are stored. `local` preserves the default
+	/// filesystem backend. Set this to `s3` to use the native S3-compatible
+	/// object storage backend.
+	///
+	/// Media is not migrated when switching backends; existing MXCs remain
+	/// unavailable until their objects are copied to the selected backend. S3
+	/// objects are stored outside the database and are not included in database
+	/// backups; back them up independently. A consistent recovery needs a
+	/// database backup and a matching bucket snapshot or versioning restore point.
+	/// Separate backups can race uploads and deletions, and object version IDs
+	/// are not stored in the database. S3 time-window cleanup uses each object's
+	/// Last-Modified time, so copied objects use their copy time.
+	///
+	/// default: "local"
+	#[serde(default)]
+	pub media_backend: MediaBackend,
+
+	/// S3-compatible object storage settings. These are required when
+	/// `media_backend` is `s3`. Credentials may also be supplied through the
+	/// standard AWS environment variables or workload credential providers.
+	///
+	/// display: nested
+	#[serde(default)]
+	pub media_s3: Option<MediaS3Config>,
 
 	/// List of forbidden server names via regex patterns that we will block
 	/// incoming AND outgoing federation with, and block client room joins /
@@ -2488,6 +2514,93 @@ pub struct TlsConfig {
 	/// Whether to listen and allow for HTTP and HTTPS connections (insecure!)
 	#[serde(default)]
 	pub dual_protocol: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaBackend {
+	#[default]
+	Local,
+	S3,
+}
+
+#[derive(Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+#[config_example_generator(
+	filename = "conduwuit-example.toml",
+	section = "global.media_s3",
+	optional = "true"
+)]
+pub struct MediaS3Config {
+	/// The S3 bucket used for media objects.
+	pub bucket: Option<String>,
+
+	/// The AWS region. If omitted, the standard AWS environment settings are
+	/// used, falling back to `us-east-1`.
+	pub region: Option<String>,
+
+	/// An S3-compatible service endpoint. Omit this for AWS S3.
+	///
+	/// display: sensitive
+	pub endpoint: Option<String>,
+
+	/// Prefix prepended to each generated media object key.
+	///
+	/// default: ""
+	pub key_prefix: String,
+
+	/// Optional static access key ID. If omitted, credentials are loaded from
+	/// the standard AWS environment variables or workload credential providers.
+	pub access_key_id: Option<SecretString>,
+
+	/// Optional static secret access key. If omitted, credentials are loaded from
+	/// the standard AWS environment variables or workload credential providers.
+	pub secret_access_key: Option<SecretString>,
+
+	/// Optional session token for temporary static credentials.
+	pub session_token: Option<SecretString>,
+
+	/// Use virtual-hosted requests instead of path-style requests. Omit this to
+	/// use the S3 backend's path-style default.
+	pub virtual_hosted_style_request: Option<bool>,
+
+	/// Permit plain HTTP connections. Leave disabled except for isolated local
+	/// S3-compatible test services.
+	///
+	/// default: false
+	pub allow_http: bool,
+}
+
+impl std::fmt::Debug for MediaS3Config {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("MediaS3Config")
+			.field("bucket", &self.bucket)
+			.field("region", &self.region)
+			.field("endpoint_configured", &self.endpoint.is_some())
+			.field("key_prefix", &self.key_prefix)
+			.field("access_key_id", &self.access_key_id)
+			.field("secret_access_key", &self.secret_access_key)
+			.field("session_token", &self.session_token)
+			.field("virtual_hosted_style_request", &self.virtual_hosted_style_request)
+			.field("allow_http", &self.allow_http)
+			.finish()
+	}
+}
+
+/// Secret configuration text with deliberately redacted debug output.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct SecretString(String);
+
+impl SecretString {
+	/// Expose the secret to the storage client builder.
+	pub fn expose_secret(&self) -> &str { &self.0 }
+}
+
+impl std::fmt::Debug for SecretString {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("[REDACTED]")
+	}
 }
 
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
@@ -3402,4 +3515,63 @@ fn default_preferred_username_claim() -> String { "preferred_username".to_owned(
 
 fn default_profile_key_map() -> HashMap<String, String> {
 	HashMap::from_iter([(ProfileFieldName::DisplayName.to_string(), "name".to_owned())])
+}
+
+#[cfg(test)]
+mod tests {
+	use figment::{Figment, providers::{Format, Toml}};
+
+	use super::{Config, MediaS3Config};
+
+	#[test]
+	fn media_s3_debug_redacts_credentials_and_endpoint() {
+		let config: MediaS3Config = serde_json::from_str(
+			r#"{
+				"bucket":"test-media",
+				"endpoint":"https://user:endpoint-secret@example.org",
+				"access_key_id":"access-id-secret",
+				"secret_access_key":"secret-access-secret",
+				"session_token":"session-token-secret"
+			}"#,
+		)
+		.expect("test S3 configuration should deserialize");
+
+		let debug = format!("{config:?}");
+		assert!(debug.contains("endpoint_configured: true"));
+		assert!(debug.contains("[REDACTED]"));
+		for secret in [
+			"endpoint-secret",
+			"access-id-secret",
+			"secret-access-secret",
+			"session-token-secret",
+		] {
+			assert!(!debug.contains(secret), "S3 debug output exposed {secret}");
+		}
+	}
+
+	#[test]
+	fn config_display_redacts_s3_endpoint_paths() {
+		let raw = Figment::from(
+			Toml::string(
+				r#"
+				[global]
+				server_name = "example.org"
+				database_path = "test-data"
+				media_backend = "s3"
+
+				[global.media_s3]
+				endpoint = "https://objects.example.org/storage/proxy-token-sentinel"
+				"#,
+			)
+			.nested(),
+		);
+		let config = Config::new(&raw).expect("test configuration should deserialize");
+
+		let display = format!("{config}");
+		assert!(display.contains("| endpoint | *********** |"));
+		assert!(
+			!display.contains("proxy-token-sentinel"),
+			"config display exposed an S3 endpoint path"
+		);
+	}
 }

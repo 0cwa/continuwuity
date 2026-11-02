@@ -1739,7 +1739,7 @@
 #
 # If none of these checks apply to your use cases, and your media
 # directory is significantly large setting this to false may reduce
-# startup time.
+# startup time. This check applies only when `media_backend` is `local`.
 #
 # env: CONTINUWUITY_MEDIA_STARTUP_CHECK
 #media_startup_check = true
@@ -1748,6 +1748,7 @@
 # symlinks of media.
 #
 # This option is only necessary if you plan on using Conduit again.
+# It applies only when `media_backend` is `local`.
 # Otherwise setting this to false reduces filesystem clutter and overhead
 # for managing these symlinks in the directory. This is now disabled by
 # default. You may still return to upstream Conduit but you have to run
@@ -1765,10 +1766,25 @@
 # corresponding entries will be removed from the database. This is
 # disabled by default because if the media directory is accidentally moved
 # or inaccessible, the metadata entries in the database will be lost with
-# sadness.
+# sadness. This applies only when `media_backend` is `local`.
 #
 # env: CONTINUWUITY_PRUNE_MISSING_MEDIA
 #prune_missing_media = false
+
+# Select where media files are stored. `local` preserves the default
+# filesystem backend. Set this to `s3` to use the native S3-compatible
+# object storage backend.
+#
+# Media is not migrated when switching backends; existing MXCs remain
+# unavailable until their objects are copied to the selected backend. S3
+# objects are stored outside the database and are not included in database
+# backups; back them up independently. A consistent recovery needs a
+# database backup and a matching bucket snapshot or versioning restore point.
+# Separate backups can race uploads and deletions, and object version IDs
+# are not stored in the database. S3 time-window cleanup uses each object's
+# Last-Modified time, so copied objects use their copy time.
+#
+#media_backend = "local"
 
 # List of forbidden server names via regex patterns that we will block
 # incoming AND outgoing federation with, and block client room joins /
@@ -2329,6 +2345,49 @@
 #
 # env: CONTINUWUITY_TLS__DUAL_PROTOCOL
 #dual_protocol = false
+
+#[global.media_s3]
+
+# The S3 bucket used for media objects.
+#
+#bucket =
+
+# The AWS region. If omitted, the standard AWS environment settings are
+# used, falling back to `us-east-1`.
+#
+#region =
+
+# An S3-compatible service endpoint. Omit this for AWS S3.
+#
+#endpoint =
+
+# Prefix prepended to each generated media object key.
+#
+#key_prefix = ""
+
+# Optional static access key ID. If omitted, credentials are loaded from
+# the standard AWS environment variables or workload credential providers.
+#
+#access_key_id =
+
+# Optional static secret access key. If omitted, credentials are loaded from
+# the standard AWS environment variables or workload credential providers.
+#
+#secret_access_key =
+
+# Optional session token for temporary static credentials.
+#
+#session_token =
+
+# Use virtual-hosted requests instead of path-style requests. Omit this to
+# use the S3 backend's path-style default.
+#
+#virtual_hosted_style_request =
+
+# Permit plain HTTP connections. Leave disabled except for isolated local
+# S3-compatible test services.
+#
+#allow_http = false
 
 [global.well_known]
 

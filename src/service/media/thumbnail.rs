@@ -9,10 +9,6 @@ use std::{cmp, num::Saturating as Sat};
 
 use conduwuit::{Result, checked, err};
 use ruma::{UInt, UserId, http_headers::ContentDisposition, media::Method};
-use tokio::{
-	fs,
-	io::{AsyncReadExt, AsyncWriteExt},
-};
 
 use super::{FileMeta, data::Metadata};
 use crate::media::mxc::Mxc;
@@ -37,13 +33,13 @@ impl super::Service {
 		dim: &Dim,
 		file: &[u8],
 	) -> Result<()> {
-		let key =
-			self.db
-				.create_file_metadata(mxc, user, dim, content_disposition, content_type)?;
+		let _mxc_lock = self.mxc_mutex.lock(mxc).await;
 
-		//TODO: Dangling metadata in database if creation fails
-		let mut f = self.create_media_file(&key).await?;
-		f.write_all(file).await?;
+		let key = self
+			.db
+			.prepare_file_metadata(mxc, dim, content_disposition, content_type)?;
+		self.store.put(&key, file).await?;
+		self.db.insert_file_metadata(&key, mxc, user);
 
 		Ok(())
 	}
@@ -78,12 +74,7 @@ impl super::Service {
 	/// Using saved thumbnail
 	#[tracing::instrument(name = "saved", level = "debug", skip(self, data))]
 	async fn get_thumbnail_saved(&self, data: Metadata) -> Result<Option<FileMeta>> {
-		let mut content = Vec::new();
-		let path = self.get_media_file(&data.key);
-		fs::File::open(path)
-			.await?
-			.read_to_end(&mut content)
-			.await?;
+		let content = self.store.get(&data.key).await?;
 
 		Ok(Some(into_filemeta(data, content)))
 	}
@@ -97,12 +88,15 @@ impl super::Service {
 		dim: &Dim,
 		data: Metadata,
 	) -> Result<Option<FileMeta>> {
-		let mut content = Vec::new();
-		let path = self.get_media_file(&data.key);
-		fs::File::open(path)
-			.await?
-			.read_to_end(&mut content)
-			.await?;
+		let _mxc_lock = self.mxc_mutex.lock(mxc).await;
+
+		// Another thumbnail request may have generated this size while this
+		// request waited for the per-MXC lock.
+		if let Ok(saved) = self.db.search_file_metadata(mxc, dim).await {
+			return self.get_thumbnail_saved(saved).await;
+		}
+
+		let content = self.store.get(&data.key).await?;
 
 		let Ok(image) = image::load_from_memory(&content) else {
 			// Couldn't parse file to generate thumbnail, send original
@@ -122,16 +116,14 @@ impl super::Service {
 
 		// Save thumbnail in database so we don't have to generate it again next
 		// time
-		let thumbnail_key = self.db.create_file_metadata(
+		let thumbnail_key = self.db.prepare_file_metadata(
 			mxc,
-			None,
 			dim,
 			data.content_disposition.as_ref(),
 			data.content_type.as_deref(),
 		)?;
-
-		let mut f = self.create_media_file(&thumbnail_key).await?;
-		f.write_all(&thumbnail_bytes).await?;
+		self.store.put(&thumbnail_key, &thumbnail_bytes).await?;
+		self.db.insert_file_metadata(&thumbnail_key, mxc, None);
 
 		Ok(Some(into_filemeta(data, thumbnail_bytes)))
 	}

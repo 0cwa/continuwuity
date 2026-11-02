@@ -4,7 +4,7 @@ use either::Either;
 use figment::Figment;
 use ruma::{OwnedServerName, events::room::server_acl::RoomServerAclEventContent};
 
-use super::DEPRECATED_KEYS;
+use super::{DEPRECATED_KEYS, MediaBackend, MediaS3Config};
 use crate::{Config, Err, Result, Server, debug, debug_info, debug_warn, error, warn};
 
 /// Performs check() with additional checks specific to reloading old config
@@ -20,7 +20,23 @@ pub fn reload(old: &Config, new: &Config) -> Result {
 		));
 	}
 
+	if !media_storage_settings_unchanged(old, new) {
+		return Err!(Config(
+			"media_backend",
+			"Media storage and migration settings cannot be changed during config reload; restart the server to apply them"
+		));
+	}
+
 	Ok(())
+}
+
+fn media_storage_settings_unchanged(old: &Config, new: &Config) -> bool {
+	old.database_path == new.database_path
+		&& old.media_backend == new.media_backend
+		&& old.media_s3 == new.media_s3
+		&& old.media_startup_check == new.media_startup_check
+		&& old.media_compat_file_link == new.media_compat_file_link
+		&& old.prune_missing_media == new.prune_missing_media
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -35,6 +51,7 @@ pub fn check(config: &Config) -> Result {
 
 	warn_deprecated(config);
 	warn_unknown_key(config);
+	check_media_backend(config)?;
 
 	if config.sentry && config.sentry_endpoint.is_none() {
 		return Err!(Config(
@@ -354,6 +371,249 @@ pub fn check(config: &Config) -> Result {
 		})?;
 
 	Ok(())
+}
+
+fn check_media_backend(config: &Config) -> Result {
+	check_media_backend_settings(
+		config.media_backend,
+		config.media_s3.as_ref(),
+		config.media_compat_file_link,
+	)
+}
+
+fn check_media_backend_settings(
+	backend: MediaBackend,
+	media_s3: Option<&MediaS3Config>,
+	compatibility_links: bool,
+) -> Result {
+	let media_s3 = match (backend, media_s3) {
+		| (MediaBackend::Local, None) => return Ok(()),
+		| (MediaBackend::Local, Some(_)) => {
+			return Err!(Config("media_s3", "media_s3 settings require media_backend = \"s3\""));
+		},
+		| (MediaBackend::S3, Some(media_s3)) => media_s3,
+		| (MediaBackend::S3, None) => {
+			return Err!(Config(
+				"media_s3",
+				"media_s3 settings are required when media_backend = \"s3\""
+			));
+		},
+	};
+
+	if media_s3
+		.bucket
+		.as_deref()
+		.is_none_or(|bucket| bucket.trim().is_empty())
+	{
+		return Err!(Config(
+			"media_s3.bucket",
+			"An S3 bucket name is required when media_backend = \"s3\""
+		));
+	}
+
+	if media_s3.access_key_id.is_some() != media_s3.secret_access_key.is_some() {
+		return Err!(Config(
+			"media_s3.access_key_id",
+			"Static S3 credentials require both access_key_id and secret_access_key"
+		));
+	}
+
+	if media_s3.session_token.is_some() && media_s3.access_key_id.is_none() {
+		return Err!(Config(
+			"media_s3.session_token",
+			"A configured session_token requires static access_key_id and secret_access_key"
+		));
+	}
+
+	if compatibility_links {
+		return Err!(Config(
+			"media_compat_file_link",
+			"The Conduit compatibility symlinks require media_backend = \"local\""
+		));
+	}
+
+	if let Some(endpoint) = &media_s3.endpoint {
+		let endpoint_url = url::Url::parse(endpoint).map_err(|_| {
+			crate::err!(Config(
+				"media_s3.endpoint",
+				"The S3 endpoint must be an absolute HTTP or HTTPS URL"
+			))
+		})?;
+
+		if !matches!(endpoint_url.scheme(), "http" | "https") || endpoint_url.host_str().is_none() {
+			return Err!(Config(
+				"media_s3.endpoint",
+				"The S3 endpoint must be an absolute HTTP or HTTPS URL"
+			));
+		}
+
+		if endpoint_url.scheme() == "http" && !media_s3.allow_http {
+			return Err!(Config(
+				"media_s3.allow_http",
+				"Plain HTTP S3 endpoints require allow_http = true"
+			));
+		}
+
+		if !endpoint_url.username().is_empty()
+			|| endpoint_url.password().is_some()
+			|| endpoint_url.query().is_some()
+			|| endpoint_url.fragment().is_some()
+		{
+			return Err!(Config(
+				"media_s3.endpoint",
+				"Credentials and query parameters must be configured separately from the S3 endpoint"
+			));
+		}
+	}
+
+	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{
+		Config, Figment, MediaBackend, MediaS3Config, check_media_backend_settings, reload,
+	};
+
+	fn s3_config(value: &str) -> MediaS3Config {
+		serde_json::from_str(value).expect("test S3 configuration should deserialize")
+	}
+
+	fn default_config() -> Config {
+		let raw = Figment::new()
+			.merge(("server_name", "example.org"))
+			.merge(("database_path", "test-data"));
+		Config::new(&raw).expect("test configuration should deserialize")
+	}
+
+	fn assert_reload_requires_restart(old: &Config, new: &Config) {
+		let error = reload(old, new).expect_err("media storage changes must require restart");
+		assert!(error.to_string().contains("restart the server"));
+	}
+
+	#[test]
+	fn local_backend_remains_valid_without_s3_settings() {
+		let config = default_config();
+		assert_eq!(config.media_backend, MediaBackend::Local);
+		assert!(!config.media_compat_file_link);
+		assert!(check_media_backend_settings(MediaBackend::Local, None, true).is_ok());
+	}
+
+	#[test]
+	fn s3_settings_are_rejected_until_the_backend_is_selected() {
+		let config = s3_config(r#"{"bucket":"media"}"#);
+		assert!(check_media_backend_settings(MediaBackend::Local, Some(&config), false).is_err());
+	}
+
+	#[test]
+	fn s3_backend_requires_settings_and_a_bucket() {
+		assert!(check_media_backend_settings(MediaBackend::S3, None, false).is_err());
+
+		let config = MediaS3Config::default();
+		assert!(check_media_backend_settings(MediaBackend::S3, Some(&config), false).is_err());
+
+		let config = s3_config(r#"{"bucket":"media"}"#);
+		assert!(
+			check_media_backend_settings(MediaBackend::S3, Some(&config), false).is_ok(),
+			"leaving credentials unset must allow the AWS environment credential providers"
+		);
+	}
+
+	#[test]
+	fn s3_settings_require_complete_static_credentials() {
+		let config = s3_config(r#"{"bucket":"media","access_key_id":"example-access"}"#);
+		let error = check_media_backend_settings(MediaBackend::S3, Some(&config), false)
+			.expect_err("access key without secret must fail validation");
+		assert!(error.to_string().contains("require both access_key_id and secret_access_key"));
+
+		let config = s3_config(
+			r#"{"bucket":"media","secret_access_key":"example-secret-value"}"#,
+		);
+		let error = check_media_backend_settings(MediaBackend::S3, Some(&config), false)
+			.expect_err("secret without access key must fail validation");
+		assert!(error.to_string().contains("require both access_key_id and secret_access_key"));
+		assert!(!error.to_string().contains("example-secret-value"));
+
+		let config = s3_config(r#"{"bucket":"media","session_token":"example-session-value"}"#);
+		let error = check_media_backend_settings(MediaBackend::S3, Some(&config), false)
+			.expect_err("a configured session token must accompany static credentials");
+		assert!(error.to_string().contains("requires static access_key_id and secret_access_key"));
+		assert!(!error.to_string().contains("example-session-value"));
+	}
+
+	#[test]
+	fn s3_http_endpoint_requires_explicit_opt_in() {
+		let config = s3_config(r#"{"bucket":"media","endpoint":"http://127.0.0.1:9000"}"#);
+		assert!(check_media_backend_settings(MediaBackend::S3, Some(&config), false).is_err());
+
+		let config = s3_config(
+			r#"{"bucket":"media","endpoint":"http://127.0.0.1:9000","allow_http":true}"#,
+		);
+		assert!(check_media_backend_settings(MediaBackend::S3, Some(&config), false).is_ok());
+	}
+
+	#[test]
+	fn s3_endpoint_rejects_embedded_credentials_without_echoing_them() {
+		let config = s3_config(
+			r#"{"bucket":"media","endpoint":"https://user:secret-value@example.org"}"#,
+		);
+		let error = check_media_backend_settings(MediaBackend::S3, Some(&config), false)
+			.expect_err("credentials in the endpoint must fail validation");
+		assert!(!error.to_string().contains("secret-value"));
+	}
+
+	#[test]
+	fn s3_backend_rejects_local_compatibility_symlinks() {
+		let config = s3_config(r#"{"bucket":"media"}"#);
+		assert!(check_media_backend_settings(MediaBackend::S3, Some(&config), true).is_err());
+	}
+
+	#[test]
+	fn unchanged_media_storage_settings_can_be_reloaded() {
+		let config = default_config();
+		assert!(reload(&config, &config).is_ok());
+	}
+
+	#[test]
+	fn changing_the_backend_or_s3_credentials_requires_restart() {
+		let local = default_config();
+		let mut s3 = local.clone();
+		s3.media_backend = MediaBackend::S3;
+		s3.media_s3 = Some(s3_config(
+			r#"{"bucket":"media","access_key_id":"example-access","secret_access_key":"example-secret"}"#,
+		));
+		assert_reload_requires_restart(&local, &s3);
+
+		let mut changed_credentials = s3.clone();
+		changed_credentials.media_s3 = Some(s3_config(
+			r#"{"bucket":"media","access_key_id":"example-access","secret_access_key":"rotated-secret"}"#,
+		));
+		let error = reload(&s3, &changed_credentials)
+			.expect_err("changed S3 credentials must require restart");
+		assert!(error.to_string().contains("restart the server"));
+		assert!(!error.to_string().contains("rotated-secret"));
+	}
+
+	#[test]
+	fn changing_the_media_path_or_startup_migration_settings_requires_restart() {
+		let original = default_config();
+
+		let mut changed_path = original.clone();
+		changed_path.database_path.push("other-media-root");
+		assert_reload_requires_restart(&original, &changed_path);
+
+		let mut changed_compatibility = original.clone();
+		changed_compatibility.media_compat_file_link = true;
+		assert_reload_requires_restart(&original, &changed_compatibility);
+
+		let mut changed_startup_check = original.clone();
+		changed_startup_check.media_startup_check = !original.media_startup_check;
+		assert_reload_requires_restart(&original, &changed_startup_check);
+
+		let mut changed_pruning = original.clone();
+		changed_pruning.prune_missing_media = true;
+		assert_reload_requires_restart(&original, &changed_pruning);
+	}
 }
 
 /// Iterates over all the keys in the config file and warns if there is a
