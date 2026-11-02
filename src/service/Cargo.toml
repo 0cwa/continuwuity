@@ -133,6 +133,7 @@ sd-notify.workspace = true
 sd-notify.optional = true
 
 [dev-dependencies]
+opentelemetry.workspace = true
 rustls = { workspace = true, features = ["ring", "std"] }
 
 [lints]

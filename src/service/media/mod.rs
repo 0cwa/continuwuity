@@ -509,6 +509,8 @@ mod operation_lock_tests {
 	#[cfg(feature = "s3")]
 	use conduwuit::{Config, Server, config::Figment, log::Log};
 	#[cfg(feature = "s3")]
+	use opentelemetry::metrics::{MeterProvider, noop::NoopMeterProvider};
+	#[cfg(feature = "s3")]
 	use futures::stream::BoxStream;
 	#[cfg(feature = "s3")]
 	use object_store::{
@@ -668,6 +670,11 @@ mod operation_lock_tests {
 				reload: Default::default(),
 				capture: Arc::new(conduwuit::log::capture::State::new()),
 			},
+			conduwuit::metrics::Metrics::new(
+				None,
+				NoopMeterProvider::new().meter("conduwuit-test"),
+				None,
+			),
 		))
 	}
 

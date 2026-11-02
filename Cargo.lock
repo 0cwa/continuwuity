@@ -1182,6 +1182,7 @@ dependencies = [
  "nonzero_ext",
  "object_store",
  "openidconnect",
+ "opentelemetry",
  "p256",
  "rand 0.10.3",
  "regex",
