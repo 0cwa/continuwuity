@@ -23,7 +23,7 @@ use conduwuit::{
 use ruma::{OwnedMxcUri, UserId, http_headers::ContentDisposition};
 
 use self::data::{Data, Metadata};
-use self::store::{MediaStore, legacy_path, sha256_path};
+use self::store::{MediaContent, MediaStore, legacy_path, sha256_path};
 pub use self::thumbnail::Dim;
 use crate::{Dep, client, globals, media::mxc::Mxc, moderation, sending};
 
@@ -107,7 +107,45 @@ impl Service {
 		content_type: Option<&str>,
 		file: &[u8],
 	) -> Result<()> {
+		self.create_content(
+			mxc,
+			user,
+			content_disposition,
+			content_type,
+			MediaContent::Borrowed(file),
+		)
+		.await
+	}
+
+	/// Uploads a file whose buffer can be transferred to the media backend.
+	pub async fn create_owned(
+		&self,
+		mxc: &Mxc<'_>,
+		user: Option<&UserId>,
+		content_disposition: Option<&ContentDisposition>,
+		content_type: Option<&str>,
+		file: Vec<u8>,
+	) -> Result<()> {
+		self.create_content(
+			mxc,
+			user,
+			content_disposition,
+			content_type,
+			MediaContent::Owned(file),
+		)
+		.await
+	}
+
+	async fn create_content(
+		&self,
+		mxc: &Mxc<'_>,
+		user: Option<&UserId>,
+		content_disposition: Option<&ContentDisposition>,
+		content_type: Option<&str>,
+		file: MediaContent<'_>,
+	) -> Result<()> {
 		let _mxc_lock = self.mxc_mutex.lock(mxc).await;
+		let file_len = file.len();
 
 		// Width, Height = 0 if it's not a thumbnail
 		let key = self
@@ -117,7 +155,7 @@ impl Service {
 				err!(Database(error!("Failed to prepare media metadata for MXC {mxc}: {error}")))
 			})?;
 
-		self.store.put(&key, file).await.map_err(|error| {
+		self.store.put_content(&key, file).await.map_err(|error| {
 			err!(Database(error!(
 				"Failed to write media file for MXC {mxc} at key {key:?}: {error}"
 			)))
@@ -129,7 +167,7 @@ impl Service {
 			.metrics
 			.instruments
 			.media_write_size
-			.record(file.len().try_into().unwrap_or(u64::MAX), &[self.origin(mxc)]);
+			.record(file_len.try_into().unwrap_or(u64::MAX), &[self.origin(mxc)]);
 
 		Ok(())
 	}

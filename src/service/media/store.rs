@@ -1,4 +1,5 @@
 use std::{
+	borrow::Cow,
 	path::{Path, PathBuf},
 	time::SystemTime,
 };
@@ -7,6 +8,8 @@ use conduwuit::{Config, Err, Result, debug_error};
 use tokio::fs;
 
 use super::encode_key;
+
+pub(super) type MediaContent<'a> = Cow<'a, [u8]>;
 
 #[cfg(feature = "s3")]
 use conduwuit::err;
@@ -71,10 +74,14 @@ impl MediaStore {
 	}
 
 	pub(super) async fn put(&self, key: &[u8], content: &[u8]) -> Result<()> {
+		self.put_content(key, MediaContent::Borrowed(content)).await
+	}
+
+	pub(super) async fn put_content(&self, key: &[u8], content: MediaContent<'_>) -> Result<()> {
 		match self {
 			| Self::Local { root, compatibility_links } => {
 				let path = sha256_path(root, key);
-				fs::write(&path, content).await?;
+				fs::write(&path, content.as_ref()).await?;
 
 				if *compatibility_links {
 					let legacy = legacy_path(root, key);
@@ -95,7 +102,7 @@ impl MediaStore {
 				let location = store.location(key)?;
 				store
 					.store
-					.put(&location, bytes::Bytes::copy_from_slice(content).into())
+					.put(&location, s3_payload(content).into())
 					.await
 					.map_err(|error| object_store_error("write", key, error))?;
 
@@ -193,6 +200,14 @@ impl MediaStore {
 					})
 			},
 		}
+	}
+}
+
+#[cfg(feature = "s3")]
+fn s3_payload(content: MediaContent<'_>) -> bytes::Bytes {
+	match content {
+		| MediaContent::Borrowed(content) => bytes::Bytes::copy_from_slice(content),
+		| MediaContent::Owned(content) => bytes::Bytes::from(content),
 	}
 }
 
@@ -448,7 +463,17 @@ mod tests {
 
 	use object_store::{ObjectStoreExt, memory::InMemory};
 
-	use super::{MediaStore, S3MediaStore, object_store_error};
+	use super::{MediaContent, MediaStore, S3MediaStore, object_store_error, s3_payload};
+
+	#[test]
+	fn owned_s3_upload_reuses_the_existing_buffer() {
+		let content = vec![0x5a; 1024];
+		let original_ptr = content.as_ptr();
+		let payload = s3_payload(MediaContent::Owned(content));
+
+		assert_eq!(payload.as_ptr(), original_ptr);
+		assert_eq!(payload.as_ref(), &[0x5a; 1024]);
+	}
 
 	#[tokio::test]
 	async fn s3_adapter_roundtrips_original_and_thumbnail_and_deletes_only_the_requested_object() {
@@ -486,7 +511,7 @@ mod tests {
 		let original = b"original image bytes";
 		let thumbnail = b"thumbnail image bytes";
 		media
-			.put(original_key, original)
+			.put_content(original_key, MediaContent::Owned(original.to_vec()))
 			.await
 			.expect("original upload should work");
 		media

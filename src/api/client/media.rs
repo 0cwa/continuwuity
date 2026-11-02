@@ -45,13 +45,15 @@ pub(crate) async fn create_content_route(
 	State(services): State<crate::State>,
 	body: Ruma<create_content::v3::Request>,
 ) -> Result<create_content::v3::Response> {
-	let user = body.identity.expect_sender_user()?;
+	let identity = body.identity;
+	let request = body.body;
+	let user = identity.expect_sender_user()?;
 	if services.users.is_suspended(user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	let filename = body.filename.as_deref();
-	let content_type = body.content_type.as_deref();
+	let filename = request.filename.as_deref();
+	let content_type = request.content_type.as_deref();
 	let content_disposition = make_content_disposition(None, content_type, filename);
 	let ref mxc = Mxc {
 		server_name: services.globals.server_name(),
@@ -60,7 +62,7 @@ pub(crate) async fn create_content_route(
 
 	if let Err(e) = services
 		.media
-		.create(mxc, Some(user), Some(&content_disposition), content_type, &body.file)
+		.create_owned(mxc, Some(user), Some(&content_disposition), content_type, request.file)
 		.await
 	{
 		err!("Failed to save uploaded media: {e}");

@@ -155,26 +155,30 @@ impl Service {
 			)
 			.await?;
 
-		let reader = ImageReader::new(std::io::Cursor::new(&image)).with_guessed_format()?;
-		let content_type = reader
-			.format()
-			.ok_or_else(|| err!(Request(Unknown("Downloaded file is not a supported image"))))?
-			.to_mime_type();
+		let content_type = {
+			let reader = ImageReader::new(std::io::Cursor::new(&image)).with_guessed_format()?;
+			let content_type = reader
+				.format()
+				.ok_or_else(|| err!(Request(Unknown("Downloaded file is not a supported image"))))?
+				.to_mime_type();
 
-		if preview_data.image_height.is_none() || preview_data.image_width.is_none() {
-			let (width, height) = reader.into_dimensions().map_err(|error| {
-				err!(Request(Unknown("Failed to read preview image dimensions: {error}")))
-			})?;
-			preview_data.image_width.get_or_insert(width);
-			preview_data.image_height.get_or_insert(height);
-		}
+			if preview_data.image_height.is_none() || preview_data.image_width.is_none() {
+				let (width, height) = reader.into_dimensions().map_err(|error| {
+					err!(Request(Unknown("Failed to read preview image dimensions: {error}")))
+				})?;
+				preview_data.image_width.get_or_insert(width);
+				preview_data.image_height.get_or_insert(height);
+			}
+
+			content_type
+		};
 
 		let mxc = Mxc {
 			server_name: self.services.globals.server_name(),
 			media_id: &random_string(super::MXC_LENGTH),
 		};
 
-		self.create(&mxc, None, None, Some(content_type), &image)
+		self.create_owned(&mxc, None, None, Some(content_type), image)
 			.await?;
 
 		preview_data.image = Some(mxc.to_string());
@@ -239,10 +243,11 @@ impl Service {
 		};
 
 		let content_type = content_type.and_then(|v| v.to_str().map(ToOwned::to_owned).ok());
-		self.create(&mxc, None, None, content_type.as_deref(), &media)
+		let media_len = media.len();
+		self.create_owned(&mxc, None, None, content_type.as_deref(), media)
 			.await?;
 
-		Ok((OwnedMxcUri::from(mxc.to_string()), media.len()))
+		Ok((OwnedMxcUri::from(mxc.to_string()), media_len))
 	}
 
 	#[cfg(not(feature = "url_preview"))]
