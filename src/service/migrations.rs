@@ -260,6 +260,10 @@ async fn migrate(services: &Services) -> Result<()> {
 
 	for step in MIGRATIONS {
 		match step {
+			// Keep the marker pending in S3 mode so switching back to local can
+			// still run the filesystem migration.
+			| DatabaseMigrationStep::Migration(name, _)
+				if *name == "feat_sha256_media" && !services.media.is_local_storage() => {},
 			| DatabaseMigrationStep::Migration(_, migration) => {
 				migration(services).await?;
 			},
@@ -272,7 +276,7 @@ async fn migrate(services: &Services) -> Result<()> {
 		}
 	}
 
-	if services.config.media_startup_check {
+	if services.media.is_local_storage() && services.config.media_startup_check {
 		info!("Starting media startup integrity check.");
 		let now = Instant::now();
 		media::migrations::checkup_sha256_media(services)

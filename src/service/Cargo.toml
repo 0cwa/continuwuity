@@ -22,6 +22,9 @@ bindgen-runtime = [
 bindgen-static = [
     "conduwuit-database/bindgen-static"
 ]
+s3 = [
+	"dep:object_store",
+]
 brotli_compression = [
 	"conduwuit-core/brotli_compression",
 	"reqwest/brotli",
@@ -106,6 +109,7 @@ log.workspace = true
 loole.workspace = true
 lru-cache.workspace = true
 nonzero_ext.workspace = true
+object_store = { workspace = true, optional = true }
 p256.workspace = true
 regex.workspace = true
 reqwest.workspace = true
@@ -140,12 +144,12 @@ rand.workspace = true
 sd-notify.workspace = true
 sd-notify.optional = true
 
+[dev-dependencies]
+opentelemetry.workspace = true
+rustls = { workspace = true, features = ["ring", "std"] }
+
 [lints]
 workspace = true
 
 [package.metadata.cargo-shear]
 ignored = ["reqwest_0_12"]
-
-[dev-dependencies]
-opentelemetry.workspace = true
-rustls = { workspace = true, features = ["ring"] }

@@ -63,11 +63,18 @@ impl Service {
 			.expect("failed to notify systemd of reloading state");
 
 			let config_paths = self.server.config.config_paths.clone().unwrap_or_default();
-			self.reload(&config_paths)?;
+			let reload_result = self.reload(&config_paths);
 
 			#[cfg(all(feature = "systemd", target_os = "linux"))]
-			sd_notify::notify(&[sd_notify::NotifyState::Ready])
-				.expect("failed to notify systemd of ready state");
+			let reload_result = finish_reload(reload_result, || {
+				sd_notify::notify(&[sd_notify::NotifyState::Ready])
+					.expect("failed to notify systemd of ready state");
+			});
+
+			#[cfg(not(all(feature = "systemd", target_os = "linux")))]
+			let reload_result = finish_reload(reload_result, || {});
+
+			reload_result.map(|_| ())?;
 		}
 
 		Ok(())
@@ -79,5 +86,31 @@ impl Service {
 
 		check::reload(&old, &new)?;
 		self.server.config.update(new)
+	}
+}
+
+fn finish_reload<T>(reload_result: Result<T>, notify_ready: impl FnOnce()) -> Result<T> {
+	notify_ready();
+	reload_result
+}
+
+#[cfg(test)]
+mod tests {
+	use std::cell::Cell;
+
+	use conduwuit::{Err, Result};
+
+	use super::finish_reload;
+
+	#[test]
+	fn rejected_reload_still_notifies_ready_and_returns_the_original_error() {
+		let ready_notified = Cell::new(false);
+		let reload_result: Result<()> = Err!("original reload rejection");
+
+		let error = finish_reload(reload_result, || ready_notified.set(true))
+			.expect_err("rejected reload should remain an error");
+
+		assert!(ready_notified.get());
+		assert!(error.to_string().contains("original reload rejection"));
 	}
 }

@@ -61,6 +61,7 @@ standard = [
     "jemalloc_conf",
     "journald",
     "media_thumbnail",
+    "s3",
     "systemd",
     "url_preview",
     "zstd_compression",
@@ -105,7 +106,10 @@ http3 = [
 ring = [
     "rustls/ring",
 ]
-
+s3 = [
+    "conduwuit-service/s3",
+    "ring",
+]
 aws_lc_rs = [
     "rustls/aws_lc_rs",
 ]
